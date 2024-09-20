@@ -163,8 +163,11 @@ public class SubscriptionState {
     }
 
     public synchronized boolean subscribe(Set<String> topics, ConsumerRebalanceListener listener) {
+        // 注册监听器代码，是发生Rebalance的时候会在那里回调这个
         registerRebalanceListener(listener);
+        // 设置订阅类型为自动订阅主题
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
+        // 更新订阅主题，开始正式分配，并且清空之前的订阅主题关系
         return changeSubscription(topics);
     }
 
@@ -182,7 +185,13 @@ public class SubscriptionState {
         return changeSubscription(topics);
     }
 
+    /**
+     *
+     * @param topicsToSubscribe 本次订阅的topic集合
+     * @return
+     */
     private boolean changeSubscription(Set<String> topicsToSubscribe) {
+        // 如果订阅的主题集合和之前的订阅主题集合相同，则返回false，否则更新订阅主题集合
         if (subscription.equals(topicsToSubscribe))
             return false;
 
