@@ -88,19 +88,24 @@ public final class RecordAccumulator {
     /**
      * Create a new record accumulator
      *
-     * @param logContext The log context used for logging
-     * @param batchSize The size to use when allocating {@link MemoryRecords} instances
-     * @param compression The compression codec for the records
+     * @param logContext The log context used for logging，日志记录器
+     * @param batchSize The size to use when allocating {@link MemoryRecords} instances，消息批次大小，默认16k
+     * @param compression The compression codec for the records 压缩类型，具体内容可以看CompressionTyp，默认none不压缩，如果你的topic的消息占的磁盘比较多了，可以开启压缩
+     *                    <ul>但是压缩之后的读取处理会有效率开销</ul>
      * @param lingerMs An artificial delay time to add before declaring a records instance that isn't full ready for
      *        sending. This allows time for more records to arrive. Setting a non-zero lingerMs will trade off some
      *        latency for potentially better throughput due to more batching (and hence fewer, larger requests).
+     *        消息的batch延迟多久之后发出去，这是一种吞吐和效率的折中，客户端不会立刻发出消息，而是先把消息放到一个队列里，等待一段时间后再发送
+     *        减少发送次数，减少网络传输次数，提高吞吐量
      * @param retryBackoffMs An artificial delay time to retry the produce request upon receiving an error. This avoids
-     *        exhausting all retries in a short period of time.
+     *        exhausting all retries in a short period of time. 失败重试的退避时间
+     * @param deliveryTimeoutMs 消息投递的超时时间
      * @param metrics The metrics
      * @param time The time instance to use
      * @param apiVersions Request API versions for current connected brokers
      * @param transactionManager The shared transaction state object which tracks producer IDs, epochs, and sequence
-     *                           numbers per partition.
+     *                           numbers per partition. 事务管理器
+     * @param bufferPool The buffer pool to use for allocating memory for records
      */
     public RecordAccumulator(LogContext logContext,
                              int batchSize,
