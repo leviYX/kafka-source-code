@@ -19,16 +19,20 @@ package org.apache.kafka.common;
 import java.util.Objects;
 
 /**
- * Information about a Kafka node
+ * Information about a Kafka node 翻译一下很直白了，kafka的节点信息封装在这里
  */
 public class Node {
 
     private static final Node NO_NODE = new Node(-1, "", -1);
-
+    // broker节点id
     private final int id;
+    // broker节点id的字符串表示
     private final String idString;
+    // broker节点的地址，用于发起连接
     private final String host;
+    // broker节点的端口，用于发起连接
     private final int port;
+    // broker节点的机架
     private final String rack;
 
     // Cache hashCode as it is called in performance sensitive parts of the code (e.g. RecordAccumulator.ready)

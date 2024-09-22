@@ -20,13 +20,16 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /**
- * A topic name and partition number
+ * A topic name and partition number 每个topic和每个分区组成的唯一索引，代表一个分区标识，也就是topic->Partition的映射
  */
 public final class TopicPartition implements Serializable {
     private static final long serialVersionUID = -613627415771699627L;
 
+    // 缓存hashcode缓存，重写了hashcode，不用每次计算，这里做了缓存
     private int hash = 0;
+    // 分区编号
     private final int partition;
+    // 主题名称
     private final String topic;
 
     public TopicPartition(String topic, int partition) {

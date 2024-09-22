@@ -237,9 +237,10 @@ public class Sender implements Runnable {
     public void run() {
         log.debug("Starting Kafka producer I/O thread.");
 
-        // main loop, runs until close is called
+        // main loop, runs until close is called running为true表示当前客户端的Sender线程正常执行
         while (running) {
             try {
+                // 执行正常逻辑
                 runOnce();
             } catch (Exception e) {
                 log.error("Uncaught error in kafka producer I/O thread: ", e);
@@ -324,16 +325,22 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
+        // 创建发送到kafka集群的请求，要重点看下
         long pollTimeout = sendProducerData(currentTimeMs);
+        // 这里执行网络io，会将请求发出去，并且处理响应，底层用的nio，这里要重点看下
         client.poll(pollTimeout, currentTimeMs);
     }
 
     private long sendProducerData(long now) {
+        // 先从元数据缓存中获取一次
         Cluster cluster = metadata.fetch();
+        // 通过元数据cluster获取将要发送的节点的Leader分区信息
         // get the list of partitions with data ready to send
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
+        // 如果主题的leader分区对应的节点不存在，就要强制更新一次元数据。无leader可能是正在选主，也可能leader挂了，所以需要强制去
+        // broker拉取一次，保证元数据一致性
         if (!result.unknownLeaderTopics.isEmpty()) {
             // The set of topics with unknown leader contains topics with leader election pending as well as
             // topics which may have expired. Add the topic again to metadata to ensure it is included
@@ -343,6 +350,7 @@ public class Sender implements Runnable {
 
             log.debug("Requesting metadata update due to unknown leader topics from the batched records: {}",
                 result.unknownLeaderTopics);
+            // 强制标记元数据更新标识
             this.metadata.requestUpdate();
         }
 

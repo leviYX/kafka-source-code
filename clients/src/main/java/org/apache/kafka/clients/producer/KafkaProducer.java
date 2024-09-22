@@ -953,13 +953,14 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private Future<RecordMetadata> doSend(ProducerRecord<K, V> record, Callback callback) {
         TopicPartition tp = null;
         try {
-            // 判断生产者是不是关闭了，关闭就抛异常，不往下执行了
+            // Sender线程为空就抛出异常，因为元数据的更新就是Sender完成的
             throwIfProducerClosed();
             // first make sure the metadata for the topic is available
+            // 获取当前时间
             long nowMs = time.milliseconds();
             ClusterAndWaitTime clusterAndWaitTime;
             try {
-                // 等待更新元数据完成，
+                // 等待更新元数据完成，这里需要重点分析，这里更新了元数据
                 clusterAndWaitTime = waitOnMetadata(record.topic(), record.partition(), nowMs, maxBlockTimeMs);
             } catch (KafkaException e) {
                 if (metadata.isClosed())
@@ -1032,9 +1033,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             if (transactionManager != null && transactionManager.isTransactional())
                 transactionManager.maybeAddPartitionToTransaction(tp);
 
-            // 消息缓冲区到达阈值就发出消息
+            // 消息缓冲区到达阈值就发出消息，其实就是当前批次满了，或者是新的批次创建出来了，当前批次满了说明可以发了
+            // 新的批次创建出来了，说明有旧的可以发了，总之就是有符合条件的消息可以发了
             if (result.batchIsFull || result.newBatchCreated) {
                 log.trace("Waking up the sender since topic {} partition {} is either full or getting a new batch", record.topic(), partition);
+                // 消息可以发了，唤醒阻塞的sender线程，开始发送数据，没消息的时候他的run中的selector阻塞了，和netty一个思路
                 this.sender.wakeup();
             }
             return result.future;
@@ -1069,7 +1072,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         }
     }
 
-    /**
+    /** 我们这里的更新都是基于topic的，因为对于生产者来说，没必要拉取全部的元数据，只需要拉取自己的主题元数据即可。
      * Wait for cluster metadata including partitions for the given topic to be available.
      * @param topic The topic we want metadata for
      * @param partition A specific partition expected to exist in metadata, or null if there's no preference
@@ -1081,16 +1084,19 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
      */
     private ClusterAndWaitTime waitOnMetadata(String topic, Integer partition, long nowMs, long maxWaitMs) throws InterruptedException {
         // add topic to metadata topic list if it is not there already and reset expiry
+        // 从元数据缓存中获取元数据
         Cluster cluster = metadata.fetch();
-
+        // 判断该主题是不是无效主题，无效就抛出无效异常，不做更新，你几把都无效了
         if (cluster.invalidTopics().contains(topic))
             throw new InvalidTopicException(topic);
-
+        // 将该主题放到元数据主题列表中
         metadata.add(topic, nowMs);
-
+        // 从元数据缓存中获取主题对应的分区数
         Integer partitionsCount = cluster.partitionCountForTopic(topic);
         // Return cached metadata if we have it, and if the record's partition is either undefined
         // or within the known partition range
+        // 满足这些条件后就不需要拉取最新元数据，直接从缓存获取，其实条件的意思就是主题对应的分区数不能为空，而且发送的分区id要小宇主题的分区数
+        // 类似于一个边界检查
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
             return new ClusterAndWaitTime(cluster, 0);
 
@@ -1099,16 +1105,25 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         // Issue metadata requests until we have metadata for the topic and the requested partition,
         // or until maxWaitTimeMs is exceeded. This is necessary in case the metadata
         // is stale and the number of partitions for this topic has increased in the meantime.
+        // 这里就是缓存无法获取，需要从服务端拉取，这里不停的轮训唤醒sender线程更新元数据
+        // 轮训条件在while中，条件为，从元数据缓存中获取主题对应的分区数为空，没有leader分区甚至，此时可能没分区，也可能没拉取到最新信息
+        // 不存在直接异常抛出。但是可能没拉取，所以也是一个条件。另一个条件是发送的分区id要大雨主题分区数，说明主题分区增加了，需要重新拉取最新的
+        // 主题分区了
         do {
             if (partition != null) {
                 log.trace("Requesting metadata update for partition {} of topic {}.", partition, topic);
             } else {
                 log.trace("Requesting metadata update for topic {}.", topic);
             }
+            // 把主题topic以及过期的时间添加到元数据主题列表中
             metadata.add(topic, nowMs + elapsed);
+            // 标记元数据更新标记，获取元数据版本号
             int version = metadata.requestUpdateForTopic(topic);
+            // sender子线程唤醒，内部开始更新元数据
             sender.wakeup();
             try {
+                // 阻塞线程等待元数据更新成功，这里阻塞的是当前的doSend的线程，其实就是客户端主线程，底层是一个wait方法，那么何时会被唤醒呢
+                // 当这个方法获取到元数据之后就会解除阻塞，或者是阻塞超时时间到了，都会唤醒，再次去获取元数据
                 metadata.awaitUpdate(version, remainingWaitMs);
             } catch (TimeoutException ex) {
                 // Rethrow with original maxWaitMs to prevent logging exception with remainingWaitMs
@@ -1116,8 +1131,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                         String.format("Topic %s not present in metadata after %d ms.",
                                 topic, maxWaitMs));
             }
+            // 这里就是解除了阻塞，说明元数据被更新到了cluster中了
             cluster = metadata.fetch();
+            // 计算本次更新消耗的时间
             elapsed = time.milliseconds() - nowMs;
+            // 超时了就抛出异常
             if (elapsed >= maxWaitMs) {
                 throw new TimeoutException(partitionsCount == null ?
                         String.format("Topic %s not present in metadata after %d ms.",
@@ -1127,9 +1145,10 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
             metadata.maybeThrowExceptionForTopic(topic);
             remainingWaitMs = maxWaitMs - elapsed;
+            // 获取元数据分区数
             partitionsCount = cluster.partitionCountForTopic(topic);
         } while (partitionsCount == null || (partition != null && partition >= partitionsCount));
-
+        // 返回元数据以及消耗时间
         return new ClusterAndWaitTime(cluster, elapsed);
     }
 

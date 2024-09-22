@@ -545,9 +545,14 @@ public class NetworkClient implements KafkaClient {
             completeResponses(responses);
             return responses;
         }
-
+        // 尝试更新元数据，下面就是发起网络io了，就是发消息了，所以这一步必须准备好元数据，所以这里就是真的更新了
+        // 更新元数据，之前的更新都是打标记，这里是真正的请求更新了。这里返回的是下面selector的阻塞时间，强调一遍
+        // 这里是阻塞时间，带着这个点往下看
+        // org.apache.kafka.clients.NetworkClient.DefaultMetadataUpdater.maybeUpdate(long)
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
+            // selector登场，网络io发起，这里没事件就会阻塞，metadataTimeout这么久，要是有事件也会取消阻塞
+            // 换言之就是事件返回或者时间到了都会取消阻塞往下走，上面的元数据更新也是这个selector
             this.selector.poll(Utils.min(timeout, metadataTimeout, defaultRequestTimeoutMs));
         } catch (IOException e) {
             log.error("Unexpected error during I/O", e);
@@ -556,6 +561,7 @@ public class NetworkClient implements KafkaClient {
         // process completed actions
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
+        // 下面就是开始更新返回的元数据信息
         handleCompletedSends(responses, updatedNow);
         handleCompletedReceives(responses, updatedNow);
         handleDisconnections(responses, updatedNow);
@@ -1017,9 +1023,11 @@ public class NetworkClient implements KafkaClient {
         @Override
         public long maybeUpdate(long now) {
             // should we update our metadata?
+            // 计算下次要更新元数据的时间，其中会检测needupdate的值，退避时间，是否长时间没有更新
             long timeToNextMetadataUpdate = metadata.timeToNextUpdate(now);
+            // 检测是否已经发送了元数据的请求，如果一个元数据的请求，还没有从服务端返回，那么时间设置为waitForMetadataFetch。默认30秒
             long waitForMetadataFetch = hasFetchInProgress() ? defaultRequestTimeoutMs : 0;
-
+            // 计算元数据超时时间
             long metadataTimeout = Math.max(timeToNextMetadataUpdate, waitForMetadataFetch);
             if (metadataTimeout > 0) {
                 return metadataTimeout;
@@ -1027,12 +1035,13 @@ public class NetworkClient implements KafkaClient {
 
             // Beware that the behavior of this method and the computation of timeouts for poll() are
             // highly dependent on the behavior of leastLoadedNode.
+            // 此时表示需要立刻更新，获取最空闲的节点node，因为节点上都有信息，所以获取负载最低的
             Node node = leastLoadedNode(now);
             if (node == null) {
                 log.debug("Give up sending metadata request since no node is available");
                 return reconnectBackoffMs;
             }
-
+            // 发送更新元数据的请求
             return maybeUpdate(now, node);
         }
 
@@ -1123,11 +1132,13 @@ public class NetworkClient implements KafkaClient {
          */
         private long maybeUpdate(long now, Node node) {
             String nodeConnectionId = node.idString();
-
+            // 判断当前选中的node状态是否可以发送Request请求
             if (canSendRequest(nodeConnectionId, now)) {
+                // 构建元数据请求
                 Metadata.MetadataRequestAndVersion requestAndVersion = metadata.newMetadataRequestAndVersion(now);
                 MetadataRequest.Builder metadataRequest = requestAndVersion.requestBuilder;
                 log.debug("Sending metadata request {} to node {}", metadataRequest, node);
+                // 向nodeConnectionId对应的node发送元数据请求
                 sendInternalMetadataRequest(metadataRequest, nodeConnectionId, now);
                 inProgress = new InProgressData(requestAndVersion.requestVersion, requestAndVersion.isPartialUpdate);
                 return defaultRequestTimeoutMs;
@@ -1135,16 +1146,17 @@ public class NetworkClient implements KafkaClient {
 
             // If there's any connection establishment underway, wait until it completes. This prevents
             // the client from unnecessarily connecting to additional nodes while a previous connection
-            // attempt has not been completed.
+            // attempt has not been completed. 判断node是否正在连接
             if (isAnyNodeConnecting()) {
                 // Strictly the timeout we should return here is "connect timeout", but as we don't
                 // have such application level configuration, using reconnect backoff instead.
                 return reconnectBackoffMs;
             }
-
+            // 如果存在可用的node，就尝试初始化连接
             if (connectionStates.canConnect(nodeConnectionId, now)) {
                 // We don't have a connection to this node right now, make one
                 log.debug("Initialize connection to node {} for sending metadata request", node);
+                // 初始化和node的连接
                 initiateConnect(node, now);
                 return reconnectBackoffMs;
             }
@@ -1152,6 +1164,8 @@ public class NetworkClient implements KafkaClient {
             // connected, but can't send more OR connecting
             // In either case, we just need to wait for a network event to let us know the selected
             // connection might be usable again.
+            // 走到这里说明没有可以用的node，那就返回一个无穷大，注意我们进入这个方法一路下来最后是给selector返回一个阻塞时间的
+            // 这里没有可用的说明就元数据无法更新，那么下面的发消息就不能执行，这个无穷大时间就表示一直阻塞，不往下走，直到有新的节点可以用了
             return Long.MAX_VALUE;
         }
 

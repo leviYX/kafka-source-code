@@ -31,21 +31,40 @@ import java.util.Set;
 
 /**
  * An immutable representation of a subset of the nodes, topics, and partitions in the Kafka cluster.
+ * topic的详细信息，包括Leader所在节点，replica所在节点，ISR列表，等等信息都是在Cluster实例中保存的。基本存储了所有的kakfa集群信息。
+ * 我们知道kafka是以分区为最小的管理单元的，然后分区分为Leader和follower角色，客户端只和Leader交互，cluster封装了整个kakfa集群的信息
+ * 而cluster被封装在MetaData中，你可以理解为MetaData维护着cluster。
+ * 故而我们可以看到，在这个类中维护着如下信息，
+ * brokerId -> 节点node的映射关系，也就是Map<Integer, Node> nodesById
+ * Topic -> 分区Partition的映射关系，也就是Map<TopicPartition, PartitionInfo> partitionsByTopicPartition
+ * Node ->  分区Partition的映射关系，也就是Map<Integer, List<PartitionInfo>> partitionsByNode
  */
 public final class Cluster {
 
     private final boolean isBootstrapConfigured;
+    // 集群的broker节点的集合，代表着kafka集群的服务器信息
     private final List<Node> nodes;
+    // 未授权的主题集合
     private final Set<String> unauthorizedTopics;
+    // 无效的主题集合
     private final Set<String> invalidTopics;
+    // 内部主题集合
     private final Set<String> internalTopics;
+    // controller节点，单独封装到这里
     private final Node controller;
+    // topic对应的Partition信息字段，存放的Partition不一定有Leader副本，key为topic，value为Partition信息集合
     private final Map<TopicPartition, PartitionInfo> partitionsByTopicPartition;
+    // key为topic，value为可用的Partition信息集合，存放的Partition一定有Leader副本
     private final Map<String, List<PartitionInfo>> partitionsByTopic;
+    // topic中可用的Partition信息字典，key为topic名称，value为可用的Partition信息集合，存放的Partition必须是有Leader副本的Partition
     private final Map<String, List<PartitionInfo>> availablePartitionsByTopic;
+    // broker对应的Partition信息字典，key为broker的id，value为Partition信息集合
     private final Map<Integer, List<PartitionInfo>> partitionsByNode;
+    // broker对应的Node信息字典，key为broker的id，value为该节点的Node实例
     private final Map<Integer, Node> nodesById;
+    // kafka集群的id信息
     private final ClusterResource clusterResource;
+    // topic的id集合
     private final Map<String, Uuid> topicIds;
 
     /**

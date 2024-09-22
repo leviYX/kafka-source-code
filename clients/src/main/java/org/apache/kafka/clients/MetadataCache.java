@@ -52,7 +52,7 @@ public class MetadataCache {
     private final Map<TopicPartition, PartitionMetadata> metadataByPartition;
     private final Map<String, Uuid> topicIds;
 
-    // 这里是核心元数据封装的地方
+    // 这里是核心元数据封装的地方，需要详细分析
     private Cluster clusterInstance;
 
     MetadataCache(String clusterId,
