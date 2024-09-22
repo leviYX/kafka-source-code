@@ -57,27 +57,41 @@ import static org.apache.kafka.common.record.RecordBatch.NO_PARTITION_LEADER_EPO
  * If topic expiry is enabled for the metadata, any topic that has not been used within the expiry interval
  * is removed from the metadata refresh set after an update. Consumers disable topic expiry since they explicitly
  * manage topics while producers rely on topic expiry to limit the refresh set.
+ * 保存了所有topic的部分数据，当我们请求一个没保存的topic的元数据的时候，他会触发update来更新meta信息，如果topic metadata过期策略发现已经过期
+ * 那么就会被移除
  */
 public class Metadata implements Closeable {
     private final Logger log;
+    // 请求元数据失败后的重试间隔时间，默认100ms
     private final long refreshBackoffMs;
+    // 元数据过期时间，也就是多久自动更新一次元数据，默认为5分钟一次
     private final long metadataExpireMs;
+    // 元数据版本号，每次请求服务端都会+1保存在本地内存
     private int updateVersion;  // bumped on every metadata response
+    // 元数据加入到主题集合的版本号，每次添加topic都会+1
     private int requestVersion; // bumped on every new topic addition
+    // 最后一次更新元数据的时间
     private long lastRefreshMs;
+    // 最后一次成功更新全部主题元数据的时间
     private long lastSuccessfulRefreshMs;
+    // 失败异常
     private KafkaException fatalException;
+    // 无效的主题集合
     private Set<String> invalidTopics;
+    // 无权限的主题集合
     private Set<String> unauthorizedTopics;
+    // 元数据缓存
     private MetadataCache cache = MetadataCache.empty();
+    // 是否全部主题更新，在生产者端看来，这里的全部指的是最近发送的主题集合
     private boolean needFullUpdate;
+    // 是否部分主题更新，在生产者端看来，这里的部分指的新发送的主题集合
     private boolean needPartialUpdate;
     private final ClusterResourceListeners clusterResourceListeners;
     private boolean isClosed;
     private final Map<TopicPartition, Integer> lastSeenLeaderEpochs;
 
     /**
-     * Create a new Metadata instance
+     * Create a new Metadata instance，初始化Metadata
      *
      * @param refreshBackoffMs         The minimum amount of time that must expire between metadata refreshes to avoid busy
      *                                 polling
@@ -109,6 +123,7 @@ public class Metadata implements Closeable {
      * Get the current cluster info without blocking
      */
     public synchronized Cluster fetch() {
+        // 返回元数据的缓存，不是每次都实时拉取的
         return cache.cluster();
     }
 
@@ -147,11 +162,20 @@ public class Metadata implements Closeable {
         return this.updateVersion;
     }
 
+    /**
+     * 设置新集合主题更新的标记，这里没有真正发送更新元数据的请求，只是设置标识位，kafka必须确保在第一次拉取消息前，元数据是可用的，
+     * 所以必须更新一次元数据，之后才能发消息
+     * @return
+     */
     public synchronized int requestUpdateForNewTopics() {
         // Override the timestamp of last refresh to let immediate update.
+        // 重写上次刷新的时间戳，让下次立即更新
         this.lastRefreshMs = 0;
+        // 部分更新设置为true
         this.needPartialUpdate = true;
+        // 更新版本加1
         this.requestVersion++;
+        // 返回元数据版本号
         return this.updateVersion;
     }
 
@@ -235,9 +259,18 @@ public class Metadata implements Closeable {
         return new LeaderAndEpoch(leaderNodeOpt, leaderEpochOpt);
     }
 
+    /**
+     * 引导类开始加载元数据，这里是元数据缓存更新的发起位置，此时生产者刚启动，本地缓存的元数据是空的，因此先将全部主题更新农委true，全量获取一次
+     * 在初始化的时候版本号是0，此时+1变为1，第一次更新
+     * MetadataCache.bootstrap(addresses);调用发起初始化元数据缓存
+     * @param addresses
+     */
     public synchronized void bootstrap(List<InetSocketAddress> addresses) {
+        // 是否全部主题更新，是
         this.needFullUpdate = true;
+        // 更新版本号+1
         this.updateVersion += 1;
+        // 最终的元数据会被放在cache缓存，这个缓存为MetadataCache，里面的cluster是核心内容
         this.cache = MetadataCache.bootstrap(addresses);
     }
 

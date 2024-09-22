@@ -458,7 +458,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             if (metadata != null) {
                 this.metadata = metadata;
             } else {
-                // 第一次没有元数据，要在这里初始化
+                // 第一次没有元数据，要在这里初始化，初始化这个ProducerMetadata
                 this.metadata = new ProducerMetadata(retryBackoffMs,
                         // 元数据的过期时间，默认5分钟，五分钟同步一次
                         config.getLong(ProducerConfig.METADATA_MAX_AGE_CONFIG),

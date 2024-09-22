@@ -52,6 +52,7 @@ public class MetadataCache {
     private final Map<TopicPartition, PartitionMetadata> metadataByPartition;
     private final Map<String, Uuid> topicIds;
 
+    // 这里是核心元数据封装的地方
     private Cluster clusterInstance;
 
     MetadataCache(String clusterId,
@@ -208,13 +209,19 @@ public class MetadataCache {
                 invalidTopics, internalTopics, controller, topicIds);
     }
 
+    /**
+     * 参数为所有的broker地址，返回一个MetadataCache对象，其中包含了这些broker的信息
+     * @return
+     */
     static MetadataCache bootstrap(List<InetSocketAddress> addresses) {
+        // 把配置中所有的broker地址转换为Node对象，并存储到nodes中，作为后面的网络请求发起信息
         Map<Integer, Node> nodes = new HashMap<>();
         int nodeId = -1;
         for (InetSocketAddress address : addresses) {
             nodes.put(nodeId, new Node(nodeId, address.getHostString(), address.getPort()));
             nodeId--;
         }
+        // 此时传进去的集合都是空的，因为这是生产者启动引导，第一次初始化
         return new MetadataCache(null, nodes, Collections.emptyList(),
                 Collections.emptySet(), Collections.emptySet(), Collections.emptySet(),
                 null, Collections.emptyMap(), Cluster.bootstrap(addresses));
