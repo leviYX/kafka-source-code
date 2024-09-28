@@ -37,6 +37,7 @@ import org.slf4j.Logger;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.StandardSocketOptions;
 import java.nio.channels.CancelledKeyException;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
@@ -82,7 +83,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * The nioSelector maintains several lists that are reset by each call to <code>poll()</code> which are available via
  * various getters. These are reset by each call to <code>poll()</code>.
  *
- * This class is not thread safe!
+ * This class is not thread safe!  kselector NetworkClient的网络请求都是通过这个类来实现的，
+ * 调用位置为org.apache.kafka.clients.NetworkClient#initiateConnect(org.apache.kafka.common.Node, long)
  */
 public class Selector implements Selectable, AutoCloseable {
 
@@ -102,25 +104,37 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     private final Logger log;
+    // 这里是kafka封装了nio自己的selector，封装了一些方法，比如：
     private final java.nio.channels.Selector nioSelector;
+    // 管理客户端到各个node节点的网络连接，map集合类型<Node节点id,KafkaChannel>
     private final Map<String, KafkaChannel> channels;
     private final Set<KafkaChannel> explicitlyMutedChannels;
     private boolean outOfMemory;
+    // 发送完成的send
     private final List<NetworkSend> completedSends;
+    // 已经接收完毕的网络请求集合，其中key是channel的id，value是已经接收完毕的NetworkReceive
     private final LinkedHashMap<String, NetworkReceive> completedReceives;
+    // 立即连接的key集合
     private final Set<SelectionKey> immediatelyConnectedKeys;
+    // 关闭的channel集合
     private final Map<String, KafkaChannel> closingChannels;
     private Set<SelectionKey> keysWithBufferedRead;
+    // 断开连接的channel集合，key为channel的id，value是ChannelState,可以在使用的时候根据这个状态来判断处理逻辑
     private final Map<String, ChannelState> disconnected;
+    // 成功连接的集合，存储的是请求成功的channel的id
     private final List<String> connected;
+    // 发送失败的请求集合，存储失败请求的channel的id
     private final List<String> failedSends;
     private final Time time;
     private final SelectorMetrics sensors;
     private final ChannelBuilder channelBuilder;
+    // 最大可以接收的数据大小
     private final int maxReceiveSize;
     private final boolean recordTimePerConnection;
+    // 连接的空闲超时管理器
     private final IdleExpiryManager idleExpiryManager;
     private final LinkedHashMap<String, DelayedAuthenticationFailureClose> delayedClosingChannels;
+    // 内存池，bytebuffer池，处理buffer的分配和回收
     private final MemoryPool memoryPool;
     private final long lowMemThreshold;
     private final int failedAuthenticationDelayMs;
@@ -239,7 +253,7 @@ public class Selector implements Selectable, AutoCloseable {
      * Note that this call only initiates the connection, which will be completed on a future {@link #poll(long)}
      * call. Check {@link #connected()} to see which (if any) connections have completed after a given poll call.
      * @param id The id for the new connection
-     * @param address The address to connect to
+     * @param address The address to connect to 其实就是node的节点网络信息
      * @param sendBufferSize The send buffer for the new connection
      * @param receiveBufferSize The receive buffer for the new connection
      * @throws IllegalStateException if there is already a connection for that id
@@ -247,21 +261,29 @@ public class Selector implements Selectable, AutoCloseable {
      */
     @Override
     public void connect(String id, InetSocketAddress address, int sendBufferSize, int receiveBufferSize) throws IOException {
+        // 先确认之前没连接过，也就是这个连接id没有注册过，但是这里的逻辑不仅仅是看有没有注册，
+        // 她是先在channels查看是不是注册了，同时还会在closingChannels查看是不是正在关闭，正在关闭的连接不能再注册
         ensureNotRegistered(id);
         SocketChannel socketChannel = SocketChannel.open();
         SelectionKey key = null;
         try {
+            // 配置socketChannel信息，主要是对当前这个连接的socket进行配置，比如设置socketChannel的缓冲区大小，
+            //socketChannel.setOption(StandardSocketOptions.SO_KEEPALIVE, true);
             configureSocketChannel(socketChannel, sendBufferSize, receiveBufferSize);
+            // 发起连接
             boolean connected = doConnect(socketChannel, address);
+            // 注册channel到selector中，这里的key就是一个SelectionKey，它是代表一个通道的，并且把kafkaChannel添加到了key的附件中
             key = registerChannel(id, socketChannel, SelectionKey.OP_CONNECT);
-
+            // 如果连接成功，那么就把这个key添加到立即连接的keys中
             if (connected) {
                 // OP_CONNECT won't trigger for immediately connected channels
                 log.debug("Immediately connected to node {}", id);
                 immediatelyConnectedKeys.add(key);
+                // 连接成功之后op_write就移除了 因为轮训的时候他会干扰，这个在netty中学习过了。但是因为非阻塞，可能此时还没有连接好，那就不能移除监听accept事件
                 key.interestOps(0);
             }
         } catch (IOException | RuntimeException e) {
+            // 异常状态回滚
             if (key != null)
                 immediatelyConnectedKeys.remove(key);
             channels.remove(id);
@@ -274,6 +296,8 @@ public class Selector implements Selectable, AutoCloseable {
     // in order to simulate "immediately connected" sockets.
     protected boolean doConnect(SocketChannel channel, InetSocketAddress address) throws IOException {
         try {
+            // 此时sc会发起对端的tcp连接，因为设置了非阻塞，所以这里返回之后，连接不一定建立好(完成三次握手)
+            // 没建立好就是false，这里一般就是false，但是连接建立好就是true，后面会调用finishConnect来判断到底建立好了没有
             return channel.connect(address);
         } catch (UnresolvedAddressException e) {
             throw new IOException("Can't resolve address: " + address, e);
@@ -282,13 +306,23 @@ public class Selector implements Selectable, AutoCloseable {
 
     private void configureSocketChannel(SocketChannel socketChannel, int sendBufferSize, int receiveBufferSize)
             throws IOException {
+        // 设置socketChannel为非阻塞模式
         socketChannel.configureBlocking(false);
+        // 开启长连接探活 这个实现和socketChannel.setOption(StandardSocketOptions.SO_KEEPALIVE, true);效果一样
         Socket socket = socketChannel.socket();
         socket.setKeepAlive(true);
+        // 设置socket收发缓冲区的大小 SO_RCVBUF(默认32kb) 和 SO_SNDBUF(默认12kb) 分别是socket接收缓冲区和发送缓冲区的大小，
         if (sendBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
             socket.setSendBufferSize(sendBufferSize);
         if (receiveBufferSize != Selectable.USE_DEFAULT_BUFFER_SIZE)
             socket.setReceiveBufferSize(receiveBufferSize);
+        /**
+         * 禁用Nagle算法，即关闭TCP的Nagle算法Nagle 算法是时代的产物：Nagle 算法出现的时候网络带宽都很小，当有大量小包传输时，
+         * 很容易将带宽占满，出现丢包重传等现象。因此对 ssh 这种交互式的应用场景，选择开启 Nagle 算法可以使得不再那么频繁的发送小包，
+         * 而是合并到一起，代价是稍微有一些延迟。现在的 ssh 客户端已经默认关闭了 Nagle 算法。
+         * 我觉得还是看正向场景，延迟敏感/想自己batch那就开启no delay
+         * 其他的开不开都一样 没必要刻意想什么时候应该开启 什么时候应该关闭,而kafka的场景下，他是要提高发送消息的吞吐，所以他关闭了
+         */
         socket.setTcpNoDelay(true);
     }
 
@@ -325,18 +359,23 @@ public class Selector implements Selectable, AutoCloseable {
     }
 
     protected SelectionKey registerChannel(String id, SocketChannel socketChannel, int interestedOps) throws IOException {
+        // 注册selector
         SelectionKey key = socketChannel.register(nioSelector, interestedOps);
+        // 把kafkaChannel添加到key的附件中
         KafkaChannel channel = buildAndAttachKafkaChannel(socketChannel, id, key);
+        // 把kafkaChannel添加到channels中,连接好了存储上去，这样后面可以通过id来获取到这个连接
         this.channels.put(id, channel);
         if (idleExpiryManager != null)
+            // 把这个连接的空闲管理添加好了
             idleExpiryManager.update(channel.id(), time.nanoseconds());
         return key;
     }
 
     private KafkaChannel buildAndAttachKafkaChannel(SocketChannel socketChannel, String id, SelectionKey key) throws IOException {
         try {
-            KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize, memoryPool,
-                new SelectorChannelMetadataRegistry());
+            // 构建好kafkaChannel
+            KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize, memoryPool, new SelectorChannelMetadataRegistry());
+            // 附件绑定到key上
             key.attach(channel);
             return channel;
         } catch (Exception e) {

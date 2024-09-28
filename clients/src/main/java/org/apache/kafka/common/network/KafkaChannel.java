@@ -113,23 +113,35 @@ public class KafkaChannel implements AutoCloseable {
         THROTTLE_ENDED
     }
 
+    // channel id
     private final String id;
+    // 传输层对象，封装网络通道，SocketChannel和SelectionKey等等
     private final TransportLayer transportLayer;
     private final Supplier<Authenticator> authenticatorCreator;
     private Authenticator authenticator;
     // Tracks accumulated network thread time. This is updated on the network thread.
     // The values are read and reset after each response is sent.
     private long networkThreadTimeNanos;
+    // 最大能接受请求的字节数
     private final int maxReceiveSize;
+    // 内存池，用来分配指定大小的ByteBuffer
     private final MemoryPool memoryPool;
     private final ChannelMetadataRegistry metadataRegistry;
+    // NetworkReceive,封装了消息的读操作，每个KafkaChannel都有一个，用于读取请求
+    // NetworkReceive代表一个单独的响应，KafkaChannel读取的数据会存储到NetworkReceive中，
+    // 当NetworkReceive读满了，一个请求就被完整读取了
     private NetworkReceive receive;
+    // NetworkSend，封装了消息的写操作，每个send代表一个单独的请求，需要写出时候只需要赋值此变量
+    // 之后调用write()方法即可将数据写出到网络
     private NetworkSend send;
     // Track connection and mute state of channels to enable outstanding requests on channels to be
     // processed after the channel is disconnected.
+    // 连接是否关闭
     private boolean disconnected;
     private ChannelMuteState muteState;
+    // 连接状态
     private ChannelState state;
+    // 需要连接的远端地址
     private SocketAddress remoteAddress;
     private int successfulAuthentications;
     private boolean midWrite;
@@ -379,7 +391,9 @@ public class KafkaChannel implements AutoCloseable {
     public void setSend(NetworkSend send) {
         if (this.send != null)
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
+        // 发送消息组件设置值
         this.send = send;
+        // 添加写事件监听，以后缓冲区有了消息就会触发写事件，然后发出去
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
@@ -394,17 +408,25 @@ public class KafkaChannel implements AutoCloseable {
         return null;
     }
 
+    /**
+     * 把从网络i/o操作中读取到的数据保存在NetworkReceive中
+     * @return
+     * @throws IOException
+     */
     public long read() throws IOException {
+        // 为空表示上次已经读完了，需要重新实例化一个NetworkReceive对象，来接收下一批数据
         if (receive == null) {
             receive = new NetworkReceive(maxReceiveSize, id, memoryPool);
         }
-
+        // 没读完尝试读取该对象，读的还是原先的NetworkReceive对象,调用receive.readFrom()方法
+        // 把channel的数据读到NetworkReceive对象中，返回读取到的字节数
         long bytesReceived = receive(this.receive);
 
         if (this.receive.requiredMemoryAmountKnown() && !this.receive.memoryAllocated() && isInMutableState()) {
             //pool must be out of memory, mute ourselves.
             mute();
         }
+        // 返回读取到的字节数
         return bytesReceived;
     }
 
@@ -422,11 +444,18 @@ public class KafkaChannel implements AutoCloseable {
         return null;
     }
 
+    /**
+     * 把保存在send中的消息发送出去
+     * @return
+     * @throws IOException
+     */
     public long write() throws IOException {
+        // 为空表示kafkaChannel的buffer数据发送完了
         if (send == null)
             return 0;
 
         midWrite = true;
+        // 发送消息
         return send.writeTo(transportLayer);
     }
 

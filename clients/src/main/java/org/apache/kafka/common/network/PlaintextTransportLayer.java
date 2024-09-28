@@ -45,16 +45,31 @@ public class PlaintextTransportLayer implements TransportLayer {
         return true;
     }
 
+    /**
+     * 判断sc连接是否完成
+     * @return
+     * @throws IOException
+     */
     @Override
     public boolean finishConnect() throws IOException {
+        // 判断连接是否完成
         boolean connected = socketChannel.finishConnect();
+
+        /**
+         * 如果完成，则设置key的interestOps为OP_READ开始监听read事件，并且删除对于OP_CONNECT事件的关注，因为如果不删除后面遍历的时候。
+         * 还会遍历到这个事件，但是因为没有这个事件的发生，会有空指针异常。～表示按位取反，&表示按位与，|表示按位或。所以这个
+         * ~SelectionKey.OP_CONNECT表示对OP_CONNECT取反，然后再和key.interestOps()就等于移除了OP_CONNECT事件
+         * &～a就表示删除a事件，有就删除，没有不改变。而｜a表示把a事件添加进去
+         */
         if (connected)
             key.interestOps(key.interestOps() & ~SelectionKey.OP_CONNECT | SelectionKey.OP_READ);
+        // 返回连接是否完成
         return connected;
     }
 
     @Override
     public void disconnect() {
+        //
         key.cancel();
     }
 
@@ -100,6 +115,7 @@ public class PlaintextTransportLayer implements TransportLayer {
     */
     @Override
     public int read(ByteBuffer dst) throws IOException {
+        // sc读取数据到dst
         return socketChannel.read(dst);
     }
 
@@ -137,6 +153,11 @@ public class PlaintextTransportLayer implements TransportLayer {
     */
     @Override
     public int write(ByteBuffer src) throws IOException {
+        /**
+         * 这个方法比较复杂，它会尝试从src中读取数据，直到src中的数据全部被读取完毕或者出现异常。
+         * 复杂的地方在于我们在读取数据过来的数据，需要考虑半包和黏包问题，在netty中有解码器来实现这个问题，但是kafka没有这个解码器，
+         * 他实现了NetworkReceive.receive()方法来处理半包和黏包问题，以及NetworkSend.send()方法来处理半包和黏包问题。
+         */
         return socketChannel.write(src);
     }
 
@@ -185,6 +206,7 @@ public class PlaintextTransportLayer implements TransportLayer {
 
     /**
      * Adds the interestOps to selectionKey.
+     * key.interestOps() | ops来给channel注册感兴趣的事件，比如OP_READ，OP_WRITE，OP_CONNECT
      */
     @Override
     public void addInterestOps(int ops) {

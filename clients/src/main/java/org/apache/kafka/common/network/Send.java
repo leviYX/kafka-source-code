@@ -24,7 +24,7 @@ import java.io.IOException;
 public interface Send {
 
     /**
-     * Is this send complete?
+     * Is this send complete? 要发送的数据是否已经发送完成？
      */
     boolean completed();
 
@@ -34,11 +34,12 @@ public interface Send {
      * @param channel The Channel to write to
      * @return The number of bytes written
      * @throws IOException If the write fails
+     * 把数据写入对应的channel中
      */
     long writeTo(TransferableChannel channel) throws IOException;
 
     /**
-     * Size of the send
+     * Size of the send 发送数据的大小
      */
     long size();
 
