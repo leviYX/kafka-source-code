@@ -270,7 +270,7 @@ public class Selector implements Selectable, AutoCloseable {
             // 配置socketChannel信息，主要是对当前这个连接的socket进行配置，比如设置socketChannel的缓冲区大小，
             //socketChannel.setOption(StandardSocketOptions.SO_KEEPALIVE, true);
             configureSocketChannel(socketChannel, sendBufferSize, receiveBufferSize);
-            // 发起连接
+            // 发起连接，这个方法比较核心，要看看他的实现
             boolean connected = doConnect(socketChannel, address);
             // 注册channel到selector中，这里的key就是一个SelectionKey，它是代表一个通道的，并且把kafkaChannel添加到了key的附件中
             key = registerChannel(id, socketChannel, SelectionKey.OP_CONNECT);
@@ -361,7 +361,7 @@ public class Selector implements Selectable, AutoCloseable {
     protected SelectionKey registerChannel(String id, SocketChannel socketChannel, int interestedOps) throws IOException {
         // 注册selector
         SelectionKey key = socketChannel.register(nioSelector, interestedOps);
-        // 把kafkaChannel添加到key的附件中
+        // 构建KafkaChannel，把kafkaChannel添加到key的附件中，方便查找，后面可以通过key来获取到这个连接
         KafkaChannel channel = buildAndAttachKafkaChannel(socketChannel, id, key);
         // 把kafkaChannel添加到channels中,连接好了存储上去，这样后面可以通过id来获取到这个连接
         this.channels.put(id, channel);
@@ -421,6 +421,7 @@ public class Selector implements Selectable, AutoCloseable {
     /**
      * Queue the given request for sending in the subsequent {@link #poll(long)} calls
      * @param send The request to send
+     *             把要发送的数据封装在了NetworkSend中，然后把这个数据放在了channel的send中
      */
     public void send(NetworkSend send) {
         String connectionId = send.destinationId();
@@ -430,6 +431,10 @@ public class Selector implements Selectable, AutoCloseable {
             this.failedSends.add(connectionId);
         } else {
             try {
+                // 把数据放在send中，并且关注此channel的op_write事件，等到selector下一次
+                // poll的时候，selector会自动调用channel的write方法，把数据发送出去。注意此时还有正式发送呢
+                // channle只是暂存了这个数据，并且注册了写事件，等到后面真正发送的时候，就会selector就会感知
+                // 到写事件，然后把数据发出去
                 channel.setSend(send);
             } catch (Exception e) {
                 // update the state for consistency, the channel will be discarded after `close`
@@ -501,6 +506,7 @@ public class Selector implements Selectable, AutoCloseable {
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
+        // selector开始轮询监听事件
         int numReadyKeys = select(timeout);
         long endSelect = time.nanoseconds();
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());

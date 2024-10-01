@@ -60,6 +60,7 @@ public class Producer extends Thread {
         this.isAsync = isAsync;
         this.numRecords = numRecords;
         this.latch = latch;
+        //producer.send()
     }
 
     KafkaProducer<Integer, String> get() {
