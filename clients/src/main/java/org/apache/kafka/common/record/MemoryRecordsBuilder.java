@@ -44,6 +44,8 @@ import static org.apache.kafka.common.utils.Utils.wrapNullable;
  */
 public class MemoryRecordsBuilder implements AutoCloseable {
     private static final float COMPRESSION_RATE_ESTIMATION_FACTOR = 1.05f;
+
+    // 当关闭某个ByteBuffer也会把它对应的写操作输出流设置为CLOSED_STREAM，目的就是防止再向该ByteBuffer写入数据，否则就会抛出异常
     private static final DataOutputStream CLOSED_STREAM = new DataOutputStream(new OutputStream() {
         @Override
         public void write(int b) {
@@ -51,39 +53,63 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         }
     });
 
+    // 时间戳
     private final TimestampType timestampType;
+    // 消息的压缩算法类型
     private final CompressionType compressionType;
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
     // the written bytes. ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
+    // kafka自己对OutputStream的实现，可以对ByteBuffer自动扩容
     private final ByteBufferOutputStream bufferStream;
+    // 魔数
     private final byte magic;
+    // ByteBuffer的最初的位置
     private final int initialPosition;
+    // 基本位移
     private final long baseOffset;
+    // 日志的追加时间
     private final long logAppendTime;
+    // 是否是controller的批次
     private final boolean isControlBatch;
+    // 分区leader的版本
     private final int partitionLeaderEpoch;
+    // 写入的上限
     private final int writeLimit;
+    // 批次头的大小
     private final int batchHeaderSizeInBytes;
 
     // Use a conservative estimate of the compression ratio. The producer overrides this using statistics
     // from previous batches before appending any records.
+    // 评估的压缩率
     private float estimatedCompressionRatio = 1.0F;
 
     // Used to append records, may compress data on the fly
+    // 对bufferStream的包装，添加了压缩功能
     private DataOutputStream appendStream;
     private boolean isTransactional;
+    // 生产者ID
     private long producerId;
+    // 生产者版本
     private short producerEpoch;
+    // 批次序列号
     private int baseSequence;
+    // 压缩钱要写入的消息体大小字节数
     private int uncompressedRecordsSizeInBytes = 0; // Number of bytes (excluding the header) written before compression
+    // 压缩之前写入的记录数，不包括头
     private int numRecords = 0;
+    // 实际压缩率
     private float actualCompressionRatio = 1;
+    // 最大时间戳
     private long maxTimestamp = RecordBatch.NO_TIMESTAMP;
+    // 最大时间戳的偏移量
     private long offsetOfMaxTimestamp = -1;
+    // 最后一个记录的偏移量
     private Long lastOffset = null;
+    // 第一个记录的时间戳，第一次追加消息的时间戳
     private Long firstTimestamp = null;
 
+    // 这才是消息的封装实体，真正保存消息的地方
     private MemoryRecords builtRecords;
     private boolean aborted = false;
 
@@ -127,6 +153,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.isControlBatch = isControlBatch;
         this.partitionLeaderEpoch = partitionLeaderEpoch;
         this.writeLimit = writeLimit;
+        // 初始位置，bufferStream的初始位置
         this.initialPosition = bufferStream.position();
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
 
